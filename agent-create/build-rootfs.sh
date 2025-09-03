@@ -33,7 +33,7 @@ docker run -i --rm \
     -e EXTRA_PACKAGES="$EXTRA_PACKAGES" \
     -v /tmp/my-rootfs:/my-rootfs \
     -v "$(pwd)/agent:/usr/local/bin/agent" \
-    -v "$(pwd)/openrc-service.sh:/etc/init.d/agent" \
-    alpine sh <setup-alpine.sh
+    -v "$(pwd)/openrc-run.sh:/etc/init.d/agent" \
+    alpine sh <alpine-setup.sh
 
 umount /tmp/my-rootfs
