@@ -27,7 +27,7 @@ func execCmd(c echo.Context, program string, arg ...string) error {
 			Error:        err.Error(),
 			Stdout:       execStdOut.String(),
 			Stderr:       execStdErr.String(),
-			ExecDuration: elapsed.Microseconds(),
+			ExecDuration: elapsed.Milliseconds(),
 			MemUsage:     cmd.ProcessState.SysUsage().(*syscall.Rusage).Maxrss,
 		})
 	}
@@ -36,7 +36,7 @@ func execCmd(c echo.Context, program string, arg ...string) error {
 		Message:      "Success",
 		Stdout:       execStdOut.String(),
 		Stderr:       execStdErr.String(),
-		ExecDuration: elapsed.Microseconds(),
+		ExecDuration: elapsed.Milliseconds(),
 		MemUsage:     cmd.ProcessState.SysUsage().(*syscall.Rusage).Maxrss,
 	})
 }
