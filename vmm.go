@@ -87,19 +87,6 @@ func createAndStartVMForLanguage(ctx context.Context, language string) (*running
 		return nil, fmt.Errorf("binary, %q, is not executable. Check permissions of binary", firecrackerBinary)
 	}
 
-	// if the jailer is used, the final command will be built in NewMachine()
-	if fcCfg.JailerCfg == nil {
-		cmd := firecracker.VMCommandBuilder{}.
-			WithBin(firecrackerBinary).
-			WithSocketPath(fcCfg.SocketPath).
-			// WithStdin(os.Stdin).
-			// WithStdout(os.Stdout).
-			WithStderr(os.Stderr).
-			Build(ctx)
-
-		machineOpts = append(machineOpts, firecracker.WithProcessRunner(cmd))
-	}
-
 	vmmCtx, vmmCancel := context.WithCancel(ctx)
 
 	m, err := firecracker.NewMachine(vmmCtx, fcCfg, machineOpts...)
