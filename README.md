@@ -2,6 +2,15 @@
 
 A high-performance, isolated code execution system using Firecracker microVMs. Ignis VM provides secure, container-like isolation for running untrusted code across multiple programming languages with built-in resource monitoring and job queuing.
 
+The worker handles the lifecycle of an execution job.
+
+- Get jobs from a NATS queue
+- Keep a pool of microVMs warm, and send new jobs to pre-booted VM to reduce overhead
+- Run code execution jobs through the agent
+- Update back an ephemeral NATS subject for each job with status and result
+
+The worker uses [firecracker-go-sdk](https://github.com/firecracker-microvm/firecracker-go-sdk) to communicate with the microVMs.
+
 ## Overview
 
 Ignis VM Worker is a backend service that manages pools of Firecracker microVMs to execute code in isolated environments. It supports multiple programming languages and provides:
@@ -36,31 +45,57 @@ Each microVM contains:
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   NATS Queue    │    │   Worker        │    │   Firecracker   │
 │                 │    │   Service       │    │   MicroVM       │
-│ Jobs →          │───▶│                 │───▶│                 │
-│ Results ←       │◀───│ Pool Manager    │◀───│ Agent Service   │
-└─────────────────┘    │                 │    │ (HTTP API)      │
+│ Jobs →          │───▶│                 │───▶│ Agent Service   │
+│ Results ←       │◀───│ Pool Manager    │◀───│ (HTTP API)      │
+└─────────────────┘    │                 │    │                 │
                        │ Language Pools  │    └─────────────────┘
                        └─────────────────┘
 ```
 
-## Prerequisites
+## Requirements
 
-### System Requirements
+- The `firecracker` binary in the `PATH`
+- A rootfs in `agent/rootfs.ext4` with the agent installed and enabled at boot
+- A Linux kernel at `linux/vmlinux`.
+- CNI plugins and config (see below)
 
-- Linux (kernel 4.14+ with KVM support)
-- Go 1.24+
-- Root/sudo access (for VM management)
-- At least 4GB RAM recommended
-- KVM enabled in BIOS
+Both the rootfs and the kernel can be built with scripts in the linked repo.
 
-### Dependencies
+### CNI
 
-- **Firecracker**: MicroVM hypervisor
-- **NATS Server**: Message queue for job distribution
-- **CNI Plugins**: For VM networking
-- **Docker** (optional, for development)
+In `/etc/cni/conf.d/fcnet.conflist`:
 
-## Installation
+```json
+{
+  "name": "fcnet"
+  "cniVersion": "0.1.0",
+  "plugins": [
+    {
+      "type": "ptp",
+      "ipMasq": true,
+      "ipam": {
+        "type": "host-local",
+        "subnet": "192.168.127.0/24",
+        "resolvConf": "/etc/resolv.conf"
+      }
+    },
+    {
+      "type": "tc-redirect-tap"
+    }
+  ]
+}
+```
+
+You should also have the required CNI plugins binaries in `/opt/cni/bin`:
+
+From: https://github.com/containernetworking/plugins
+
+- host-local
+- ptp
+
+From: https://github.com/awslabs/tc-redirect-tap
+
+- tc-redirect-tap
 
 ### 1. Install Firecracker
 
@@ -72,28 +107,21 @@ sudo mv firecracker-v1.0.0-x86_64/firecracker /usr/local/bin/
 sudo chmod +x /usr/local/bin/firecracker
 ```
 
-### 2. Install NATS Server
-
-```bash
-# Using Docker (recommended for development)
-docker run -d --name nats-server -p 4222:4222 -p 8222:8222 nats:latest -js
-
-# Or install natively
-curl -L https://github.com/nats-io/nats-server/releases/latest/download/nats-server-v2.9.0-linux-amd64.zip -o nats.zip
-unzip nats.zip
-sudo mv nats-server-v2.9.0-linux-amd64/nats-server /usr/local/bin/
-```
-
-### 3. Install CNI Plugins
+### 2. Install CNI Plugins
 
 ```bash
 # Install CNI plugins for networking
 curl -L https://github.com/containernetworking/plugins/releases/download/v1.1.1/cni-plugins-linux-amd64-v1.1.1.tgz -o cni-plugins.tgz
 sudo mkdir -p /opt/cni/bin
 sudo tar -C /opt/cni/bin -xzf cni-plugins.tgz
+
+# Install tc-redirect-tap
+curl -L https://github.com/awslabs/tc-redirect-tap/releases/download/v1.0.0/tc-redirect-tap-v1.0.0-linux-amd64 -o tc-redirect-tap
+sudo mv tc-redirect-tap /opt/cni/bin/
+sudo chmod +x /opt/cni/bin/tc-redirect-tap
 ```
 
-### 4. Clone and Build
+### 3. Clone and Build
 
 ```bash
 git clone https://github.com/AvaterClasher/ignis-vm.git
@@ -121,36 +149,6 @@ FIRECRACKER_BINARY=/usr/local/bin/firecracker
 
 # Log level (optional, defaults to info)
 LOG_LEVEL=info
-```
-
-### Network Configuration
-
-The system uses CNI networking. Ensure you have a CNI configuration file at `/etc/cni/net.d/fcnet.conflist`:
-
-```json
-{
-  "cniVersion": "0.4.0",
-  "name": "fcnet",
-  "plugins": [
-    {
-      "type": "bridge",
-      "bridge": "fc-br0",
-      "isGateway": true,
-      "ipMasq": true,
-      "ipam": {
-        "type": "host-local",
-        "subnet": "10.0.0.0/16",
-        "resolvConf": "/etc/resolv.conf"
-      }
-    },
-    {
-      "type": "firewall"
-    },
-    {
-      "type": "tc-redirect-tap"
-    }
-  ]
-}
 ```
 
 ## Usage
@@ -207,7 +205,7 @@ Currently supported languages:
 ├── pool.go             # VM pool management
 ├── vm.go               # VM lifecycle management
 ├── vmm.go              # Firecracker VMM operations
-├── job_queue.go        # NATS job queue
+├── job_queue.go        # NATS-based job distribution and status tracking
 ├── options.go          # VM configuration
 ├── agent/              # VM rootfs images
 ├── agent-create/       # VM image building tools
@@ -252,7 +250,7 @@ OUTPUT_BIN=agent ./build-static.sh
 **NATS connection fails:**
 - Ensure NATS server is running
 - Check `NATS_URL` environment variable
-- Verify network connectivity
+- Verify network connectivity to NATS server
 
 **Rootfs not found:**
 - Run `make build-rootfs` to build VM images
@@ -286,6 +284,10 @@ rm /tmp/.firecracker.sock-*
 3. Make your changes
 4. Add tests if applicable
 5. Submit a pull request
+
+## Known issues
+
+Cleanup when shutting down VMs does not work properly.
 
 ## License
 
